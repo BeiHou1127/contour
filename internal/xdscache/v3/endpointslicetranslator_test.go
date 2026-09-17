@@ -14,6 +14,8 @@
 package v3
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 
 	envoy_config_core_v3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
@@ -1284,5 +1286,67 @@ func healthCheckLBEndpoint(addr *envoy_config_core_v3.Address, healthCheckPort u
 				HealthCheckConfig: hc,
 			},
 		},
+	}
+}
+
+func TestOnChangeOnAddRace(t *testing.T) {
+	var extensionClusters []*dag.ExtensionCluster
+	for i := 0; i < 50; i++ {
+		extensionClusters = append(extensionClusters, &dag.ExtensionCluster{
+			Name: fmt.Sprintf("cluster-%d", i),
+			Upstream: dag.ServiceCluster{
+				ClusterName: fmt.Sprintf("default/service-%d", i),
+				Services: []dag.WeightedService{
+					{
+						Weight:           1,
+						ServiceName:      fmt.Sprintf("service-%d", i),
+						ServiceNamespace: "default",
+						ServicePort:      core_v1.ServicePort{Name: "http"},
+					},
+				},
+			},
+		})
+	}
+	root := &dag.DAG{
+		ExtensionClusters: extensionClusters,
+	}
+
+	es := endpointSlice("default", "simple-eps-fs9du", "service-0", discovery_v1.AddressTypeIPv4, []discovery_v1.Endpoint{
+		{
+			Addresses: []string{"192.168.183.24"},
+		},
+	}, []discovery_v1.EndpointPort{
+		{
+			Port:     ptr.To[int32](8080),
+			Protocol: ptr.To[core_v1.Protocol]("TCP"),
+		},
+	},
+	)
+
+	for iter := 0; iter < 100; iter++ {
+		e := NewEndpointSliceTranslator(fixture.NewTestLogger(t))
+		e.OnChange(root)
+
+		var wg sync.WaitGroup
+		for w := 0; w < 15; w++ {
+			wg.Add(2)
+			go func() {
+				defer wg.Done()
+				e.OnChange(root)
+			}()
+			go func() {
+				defer wg.Done()
+				e.OnAdd(es, false)
+			}()
+		}
+		wg.Wait()
+
+		e.mu.Lock()
+		n := len(e.entries)
+		e.mu.Unlock()
+
+		if n == 0 {
+			t.Fatalf("race hit on iteration %d: e.entries wiped to {} (expected 50 CLAs)", iter)
+		}
 	}
 }

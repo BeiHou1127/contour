@@ -15,6 +15,7 @@ package v3
 
 import (
 	"context"
+	"sync"
 
 	envoy_service_discovery_v3 "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	envoy_types "github.com/envoyproxy/go-control-plane/pkg/cache/types"
@@ -33,6 +34,7 @@ import (
 // event and Endpoint updates via the Refresh() event and
 // generates and caches go-control-plane Snapshots.
 type SnapshotHandler struct {
+	mu           sync.Mutex // serializes Refresh() so the GetResources→UpdateResources diff is atomic
 	resources    map[envoy_resource_v3.Type]xdscache.ResourceCache
 	defaultCache envoy_cache_v3.SnapshotCache
 	edsCache     *envoy_cache_v3.LinearCache
@@ -94,6 +96,9 @@ func (s *SnapshotHandler) GetCache() envoy_cache_v3.Cache {
 // Refresh is called when the EndpointSliceTranslator updates values
 // in its cache. It updates the EDS cache.
 func (s *SnapshotHandler) Refresh() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	previouslyNotifiedResources := s.edsCache.GetResources()
 	currentResources := envoy_cache_v3.IndexRawResourcesByName(asResources(s.resources[envoy_resource_v3.EndpointType].Contents()))
 

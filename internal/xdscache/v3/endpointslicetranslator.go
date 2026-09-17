@@ -328,6 +328,12 @@ func (e *EndpointSliceTranslator) OnChange(root *dag.DAG) {
 		}
 	}
 
+	// Hold e.mu across SetClusters and Recalculate so a concurrent
+	// EndpointSlice informer event cannot drain c.stale between the
+	// two calls and cause Recalculate to return an empty map (which
+	// would wipe e.entries and delete every CLA on the next Refresh).
+	e.mu.Lock()
+
 	// Update the cache with the new clusters.
 	if err := e.cache.SetClusters(clusters); err != nil {
 		e.WithError(err).Error("failed to cache service clusters")
@@ -338,7 +344,6 @@ func (e *EndpointSliceTranslator) OnChange(root *dag.DAG) {
 	// be removed. Since we reset the cluster cache above, all
 	// the load assignments will be recalculated and we can just
 	// set the entries rather than merging them.
-	e.mu.Lock()
 	e.entries = e.cache.Recalculate()
 	e.mu.Unlock()
 
@@ -375,7 +380,9 @@ func (e *EndpointSliceTranslator) OnAdd(obj any, _ bool) {
 		}
 
 		e.WithField("endpointSlice", k8s.NamespacedNameOf(obj)).Debug("EndpointSlice is in use by a ServiceCluster, recalculating ClusterLoadAssignments")
-		e.Merge(e.cache.Recalculate())
+		e.mu.Lock()
+		maps.Copy(e.entries, e.cache.Recalculate())
+		e.mu.Unlock()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
@@ -411,7 +418,9 @@ func (e *EndpointSliceTranslator) OnUpdate(oldObj, newObj any) {
 		}
 
 		e.WithField("endpointSlice", k8s.NamespacedNameOf(newObj)).Debug("EndpointSlice is in use by a ServiceCluster, recalculating ClusterLoadAssignments")
-		e.Merge(e.cache.Recalculate())
+		e.mu.Lock()
+		maps.Copy(e.entries, e.cache.Recalculate())
+		e.mu.Unlock()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
@@ -428,7 +437,9 @@ func (e *EndpointSliceTranslator) OnDelete(obj any) {
 		}
 
 		e.WithField("endpointSlice", k8s.NamespacedNameOf(obj)).Debug("EndpointSlice was in use by a ServiceCluster, recalculating ClusterLoadAssignments")
-		e.Merge(e.cache.Recalculate())
+		e.mu.Lock()
+		maps.Copy(e.entries, e.cache.Recalculate())
+		e.mu.Unlock()
 		if e.Observer != nil {
 			e.Observer.Refresh()
 		}
