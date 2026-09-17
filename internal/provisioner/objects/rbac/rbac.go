@@ -170,6 +170,30 @@ func EnsureRBACDeleted(ctx context.Context, cli client.Client, contour *model.Co
 		}
 	}
 
+	// Sweep up per-watched-namespace Roles/RoleBindings created by
+	// EnsureRolesInNamespaces / EnsureRoleBindingsInNamespaces. Spec.WatchNamespaces
+	// is not available on the deletion path (no finalizer), so select by owner
+	// label across all namespaces and filter by the namespace-scoped resource name.
+	contourNames := contour.ContourRBACNames()
+	rbList := &rbac_v1.RoleBindingList{}
+	if err := cli.List(ctx, rbList, client.MatchingLabels(model.OwnerLabels(contour))); err != nil {
+		return fmt.Errorf("failed to list role bindings for cleanup: %w", err)
+	}
+	for i := range rbList.Items {
+		if rbList.Items[i].Name == contourNames.NamespaceScopedResourceRoleBinding {
+			deletions = append(deletions, &rbList.Items[i])
+		}
+	}
+	roleList := &rbac_v1.RoleList{}
+	if err := cli.List(ctx, roleList, client.MatchingLabels(model.OwnerLabels(contour))); err != nil {
+		return fmt.Errorf("failed to list roles for cleanup: %w", err)
+	}
+	for i := range roleList.Items {
+		if roleList.Items[i].Name == contourNames.NamespaceScopedResourceRole {
+			deletions = append(deletions, &roleList.Items[i])
+		}
+	}
+
 	for _, deletion := range deletions {
 		if err := objects.EnsureObjectDeleted(ctx, cli, deletion, contour); err != nil {
 			return err
